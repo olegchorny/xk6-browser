@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -118,13 +115,16 @@ func (s *screenshotter) screenshot(
 	}
 
 	// Add common options
+	var contentType string
 	capture.WithQuality(quality)
-	// nolint:exhaustive
+	//nolint:exhaustive
 	switch format {
 	case ImageFormatJPEG:
 		capture.WithFormat(cdppage.CaptureScreenshotFormatJpeg)
+		contentType = "image/jpeg"
 	default:
 		capture.WithFormat(cdppage.CaptureScreenshotFormatPng)
+		contentType = "image/png"
 	}
 
 	// Add clip region
@@ -175,15 +175,10 @@ func (s *screenshotter) screenshot(
 		}
 	}
 
-	// Save screenshot capture to file
-	// TODO: we should not write to disk here but put it on some queue for async disk writes
+	// Store screenshot
 	if path != "" {
-		dir := filepath.Dir(path)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("creating screenshot directory %q: %w", dir, err)
-		}
-		if err := ioutil.WriteFile(path, buf, 0o644); err != nil {
-			return nil, fmt.Errorf("saving screenshot to %q: %w", path, err)
+		if err := sess.StoreMedia(path, buf, contentType); err != nil {
+			return nil, fmt.Errorf("sending screenshot buffer to store media: %w", err)
 		}
 	}
 

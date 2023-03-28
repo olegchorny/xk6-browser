@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/grafana/xk6-browser/log"
+	"github.com/grafana/xk6-browser/storage"
 
 	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/cdp"
@@ -25,8 +26,10 @@ import (
 const wsWriteBufferSize = 1 << 20
 
 // Ensure Connection implements the EventEmitter and Executor interfaces.
-var _ EventEmitter = &Connection{}
-var _ cdp.Executor = &Connection{}
+var (
+	_ EventEmitter = &Connection{}
+	_ cdp.Executor = &Connection{}
+)
 
 type executorEmitter interface {
 	cdp.Executor
@@ -46,6 +49,7 @@ type session interface {
 	ExecuteWithoutExpectationOnReply(context.Context, string, easyjson.Marshaler, easyjson.Unmarshaler) error
 	ID() target.SessionID
 	TargetID() target.ID
+	StoreMedia(path string, buf []byte, contentType string) error
 	Done() <-chan struct{}
 }
 
@@ -316,7 +320,7 @@ func (c *Connection) recvLoop() {
 			sid, tid := eva.SessionID, eva.TargetInfo.TargetID
 
 			c.sessionsMu.Lock()
-			session := NewSession(c.ctx, c, sid, tid, c.logger)
+			session := NewSession(c.ctx, c, sid, tid, storage.NewMediaStorer(), c.logger)
 			c.logger.Debugf("Connection:recvLoop:EventAttachedToTarget", "sid:%v tid:%v wsURL:%q", sid, tid, c.wsURL)
 			c.sessions[sid] = session
 			c.sessionsMu.Unlock()

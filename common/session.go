@@ -3,7 +3,9 @@ package common
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/chromedp/cdproto"
 	"github.com/chromedp/cdproto/cdp"
@@ -11,11 +13,18 @@ import (
 	"github.com/mailru/easyjson"
 
 	"github.com/grafana/xk6-browser/log"
+	"github.com/grafana/xk6-browser/storage"
 )
 
 // Ensure Session implements the EventEmitter and Executor interfaces.
-var _ EventEmitter = &Session{}
-var _ cdp.Executor = &Session{}
+var (
+	_ EventEmitter = &Session{}
+	_ cdp.Executor = &Session{}
+)
+
+// mediaStoringTO defines the TO to wait for possible ongoing media
+// uploading goroutines after the session has been closed.
+var mediaStoringTO = 10 * time.Second //nolint:gochecknoglobals
 
 // Session represents a CDP session to a target.
 type Session struct {
@@ -30,12 +39,17 @@ type Session struct {
 	closed   bool
 	crashed  bool
 
+	mediaWg     sync.WaitGroup
+	mediaCh     chan storage.MediaFile
+	mediaStorer storage.MediaStorer
+
 	logger *log.Logger
 }
 
 // NewSession creates a new session.
 func NewSession(
-	ctx context.Context, conn *Connection, id target.SessionID, tid target.ID, logger *log.Logger,
+	ctx context.Context, conn *Connection, id target.SessionID, tid target.ID,
+	mediaStorer storage.MediaStorer, logger *log.Logger,
 ) *Session {
 	s := Session{
 		BaseEventEmitter: NewBaseEventEmitter(ctx),
@@ -44,11 +58,16 @@ func NewSession(
 		targetID:         tid,
 		readCh:           make(chan *cdproto.Message),
 		done:             make(chan struct{}),
-
-		logger: logger,
+		mediaCh:          make(chan storage.MediaFile),
+		mediaStorer:      mediaStorer,
+		logger:           logger,
 	}
+
 	s.logger.Debugf("Session:NewSession", "sid:%v tid:%v", id, tid)
+
 	go s.readLoop()
+	go s.mediaStoreLoop()
+
 	return &s
 }
 
@@ -74,6 +93,19 @@ func (s *Session) close() {
 	s.closed = true
 
 	s.emit(EventSessionClosed, nil)
+
+	// Wait for possible media files
+	// being stored until defined TO
+	waitedCh := make(chan struct{})
+	go func() {
+		defer close(waitedCh)
+		s.mediaWg.Wait()
+	}()
+
+	select {
+	case <-waitedCh:
+	case <-time.After(mediaStoringTO):
+	}
 }
 
 func (s *Session) markAsCrashed() {
@@ -108,6 +140,42 @@ func (s *Session) readLoop() {
 			return
 		}
 	}
+}
+
+func (s *Session) mediaStoreLoop() {
+	for {
+		select {
+		case media := <-s.mediaCh:
+			s.logger.Debugf(
+				"Session:mediaStoreLoop:<-s.mediaCh", "sid:%v tid:%v received media for path: %s",
+				s.id, s.targetID, media.Path,
+			)
+			s.mediaWg.Add(1)
+			go func() {
+				defer s.mediaWg.Done()
+				if err := s.mediaStorer.Store(media); err != nil {
+					s.logger.Errorf(
+						"Session:mediaStoreLoop:<-s.mediaCh", "sid:%v tid:%v error storing media file: %s",
+						s.id, s.targetID, media.Path)
+				}
+			}()
+		case <-s.done:
+			s.logger.Debugf("Session:mediaStoreLoop:<-s.done", "sid:%v tid:%v", s.id, s.targetID)
+			return
+		}
+	}
+}
+
+// StoreMedia asynchronously stores the given media locally or remotely
+// based on the underlying session's MediaStorer implementation.
+func (s *Session) StoreMedia(path string, buf []byte, contentType string) error {
+	s.mediaCh <- storage.MediaFile{
+		Path:        path,
+		Buf:         buf,
+		ContentType: contentType,
+	}
+
+	return nil
 }
 
 // Execute implements the cdp.Executor interface.

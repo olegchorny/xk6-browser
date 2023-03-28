@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/grafana/xk6-browser/log"
+	"github.com/grafana/xk6-browser/storage"
 	"github.com/grafana/xk6-browser/tests/ws"
 
 	"github.com/chromedp/cdproto"
@@ -105,6 +107,94 @@ func TestSessionCreateSession(t *testing.T) {
 			}
 
 			conn.Close()
+		}
+	})
+}
+
+type slowMediaStorer struct {
+	t      time.Duration
+	doneCh chan struct{}
+}
+
+func (s *slowMediaStorer) Store(f storage.MediaFile) error {
+	time.Sleep(s.t)
+	close(s.doneCh)
+	return nil
+}
+
+func TestSessionStoreMedia(t *testing.T) { //nolint:tparallel
+	t.Parallel()
+
+	// We can not use t.Parallel for each test case
+	// as we are overwritting the default "grace period"
+	// TO for media storing goroutines after the session
+	// is closed.
+
+	t.Run("should wait for media storing goroutines", func(t *testing.T) {
+		doneCh := make(chan struct{})
+		mediaStorer := &slowMediaStorer{
+			t:      50 * time.Millisecond,
+			doneCh: doneCh,
+		}
+
+		// Overwrite default media storing TO
+		mediaStoringTO = 100 * time.Millisecond
+
+		ctx := context.Background()
+		sess := NewSession(ctx, nil, "sessID", "targetID", mediaStorer, log.NewNullLogger())
+
+		// Start a "slow" media storing action
+		err := sess.StoreMedia("test", nil, "test")
+		require.NoError(t, err)
+
+		// Session close will wait for any live uploading
+		// goroutines, so we have to call it in a separate
+		// goroutine and wait for either it to finish or
+		// the slow media storer to finish
+		closedCh := make(chan struct{})
+		go func() {
+			sess.close()
+			close(closedCh)
+		}()
+
+		select {
+		case <-closedCh:
+			t.Fatal("session was closed before waiting for media storing")
+		case <-doneCh:
+		}
+	})
+
+	t.Run("should trigger media storing goroutines TO", func(t *testing.T) {
+		doneCh := make(chan struct{})
+		mediaStorer := &slowMediaStorer{
+			t:      100 * time.Millisecond,
+			doneCh: doneCh,
+		}
+
+		// Overwrite default media storing TO
+		mediaStoringTO = 50 * time.Millisecond
+
+		ctx := context.Background()
+		sess := NewSession(ctx, nil, "sessID", "targetID", mediaStorer, log.NewNullLogger())
+
+		// Start a "slow" media storing action
+		err := sess.StoreMedia("test", nil, "test")
+		require.NoError(t, err)
+
+		// Session close will wait for any live uploading
+		// goroutines, so we have to call it in a separate
+		// goroutine and wait for either it to finish or
+		// the slow media storer to finish
+		closedCh := make(chan struct{})
+		go func() {
+			sess.close()
+			close(closedCh)
+		}()
+
+		select {
+		case <-closedCh:
+		case <-doneCh:
+			t.Fatal("media store unexpectedly finished before TO")
 		}
 	})
 }
