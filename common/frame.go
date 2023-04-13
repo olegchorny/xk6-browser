@@ -467,7 +467,13 @@ func (f *Frame) waitForSelector(selector string, opts *FrameWaitForSelectorOptio
 		return nil, err
 	}
 	if handle == nil {
-		return nil, fmt.Errorf("waiting for selector %q did not result in any nodes", selector)
+		// Handle can be nil only for selectors waiting for 'detached' state,
+		// as there is no longer an ElementHandle representing that element
+		// in the DOM. Otherwise return error.
+		if opts.State != DOMElementStateDetached {
+			return nil, fmt.Errorf("waiting for selector %q did not result in any nodes", selector)
+		}
+		return nil, nil //nolint:nilnil
 	}
 
 	// We always return ElementHandles in the main execution context (aka "DOM world")
