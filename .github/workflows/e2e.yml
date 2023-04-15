@@ -44,32 +44,17 @@ jobs:
           which go
           go version
 
-          GOPRIVATE="go.k6.io/k6" xk6 build latest \
-            --output ./k6extension \
-            --with github.com/grafana/xk6-browser=.
-          ./k6extension version
-      - name: Install Chrome dependencies
-        if: runner.os == 'Linux'
-        run: "${GITHUB_WORKSPACE}/.github/bin/install_chrome_deps_linux.sh"
+          GOPRIVATE="go.k6.io/k6" xk6 build --output xk6-browser --with github.com/grafana/xk6-browser
       - name: Setup Chrome
         uses: browser-actions/setup-chrome@latest
         with:
           chrome-version: stable
-      - name: Chrome version
-        if: runner.os != 'Windows'
-        run: chrome --version
-      - name: Chrome version
-        if: runner.os == 'Windows'
-        shell: pwsh
-        # chrome --version doesn't work on Windows :-/
-        # See https://bugs.chromium.org/p/chromium/issues/detail?id=158372
-        run: (get-command chrome.exe).Version
       - name: Run E2E tests
         run: |
           set -x
           export XK6_HEADLESS=true
           for f in examples/*.js; do
-            ./k6extension run "$f"
+            ./k6 run "$f"
           done
       - name: Check screenshot
         # TODO: Do something more sophisticated?
